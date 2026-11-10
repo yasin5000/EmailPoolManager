@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Email Pool</string>
+    <string name="a11y_desc">Used only when you tap PASTE on the floating tool: it inserts the copied email into the text field you are currently focused on. It does not read or store screen content.</string>
+</resources>
