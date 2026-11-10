@@ -6,7 +6,7 @@ import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
 /**
- * Lets the floating PASTE button insert text into whichever editable field has input focus
+ * Lets the floating PASTE buttons insert text into whichever editable field has input focus
  * in another app. Android offers no other way to do this.
  */
 public class EmailAccessibilityService extends AccessibilityService {
@@ -30,8 +30,12 @@ public class EmailAccessibilityService extends AccessibilityService {
 
     @Override public void onDestroy() { instance = null; super.onDestroy(); }
 
-    /** Pastes the clipboard into the focused field; falls back to setting the text directly. */
-    int pasteIntoFocused(String fallbackText) {
+    /**
+     * Pastes {@code text} into the currently focused editable field. The caller must already
+     * have put {@code text} on the system clipboard so ACTION_PASTE inserts the right value;
+     * if the field refuses paste, this falls back to setting the text directly.
+     */
+    int pasteIntoFocused(String text) {
         AccessibilityNodeInfo target = null;
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root != null) {
@@ -44,9 +48,9 @@ public class EmailAccessibilityService extends AccessibilityService {
         if (target == null) return NO_FIELD;
 
         if (target.performAction(AccessibilityNodeInfo.ACTION_PASTE)) return OK;
-        if (fallbackText != null) {
+        if (text != null) {
             Bundle args = new Bundle();
-            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, fallbackText);
+            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
             if (target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return OK;
         }
         return FAILED;

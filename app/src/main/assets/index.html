@@ -29,15 +29,20 @@ button:active{transform:scale(.97);opacity:.9}
 .dot{width:9px;height:9px;border-radius:50%;background:var(--warn);flex:none}
 .dot.ok{background:var(--ok)}
 .row .t{flex:1}.row .t b{display:block;font-weight:600}.row .t span{color:var(--mut);font-size:12px}
-textarea{width:100%;min-height:96px;resize:vertical;background:#0b1020;color:var(--tx);border:1px solid var(--line);border-radius:12px;padding:10px;font:13px ui-monospace,monospace;outline:none}
+textarea{width:100%;min-height:84px;resize:vertical;background:#0b1020;color:var(--tx);border:1px solid var(--line);border-radius:12px;padding:10px;font:13px ui-monospace,monospace;outline:none}
 textarea:focus{border-color:var(--a)}
 .actions{display:flex;gap:8px;margin-top:8px}.actions .primary{flex:1}
+.hint{color:var(--mut);font-size:11px;margin:6px 2px 0}
 #msg{min-height:18px;margin-top:8px;font-size:12px;color:var(--mut)}
+.divider{display:flex;align-items:center;gap:10px;color:var(--mut);font-size:11px;margin:12px 0}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--line)}
 ul{list-style:none;margin:0;padding:0;max-height:46vh;overflow:auto}
-li{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:10px;font:13px ui-monospace,monospace}
+li{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:10px;font:12px ui-monospace,monospace}
 li:nth-child(odd){background:#ffffff06}
-li .i{color:var(--mut);width:28px;font-size:11px}
-li .e{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+li .i{color:var(--mut);width:24px;font-size:11px;flex:none}
+li .f{flex:1;overflow:hidden}
+li .e{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+li .p{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mut);font-size:11px}
 li.next{background:#6366f122;outline:1px solid #6366f155}
 li button{background:none;color:var(--mut);padding:2px 8px;font-size:16px}
 .empty{color:var(--mut);text-align:center;padding:18px 0}
@@ -49,7 +54,7 @@ li button{background:none;color:var(--mut);padding:2px 8px;font-size:16px}
 </header>
 
 <div class="card hero">
-  <div><div class="num" id="count">0</div><small>emails remaining</small></div>
+  <div><div class="num" id="count">0</div><small>pairs remaining</small></div>
 </div>
 
 <div class="card">
@@ -61,8 +66,12 @@ li button{background:none;color:var(--mut);padding:2px 8px;font-size:16px}
 </div>
 
 <div class="card">
-  <h2>Add emails</h2>
-  <textarea id="bulk" placeholder="Paste emails — separated by new lines, commas, spaces or semicolons" spellcheck="false" autocapitalize="off"></textarea>
+  <h2>Add email : password pairs</h2>
+  <button class="primary" id="upload">Upload .txt file</button>
+  <input type="file" id="file" accept=".txt,text/plain" style="display:none">
+  <div class="hint">One pair per line, formatted exactly as <b>email|password</b></div>
+  <div class="divider">or paste text</div>
+  <textarea id="bulk" placeholder="email1@example.com|Password123&#10;email2@example.com|Password456" spellcheck="false" autocapitalize="off"></textarea>
   <div class="actions"><button class="primary" id="add">Add to queue</button><button class="ghost" id="paste-in">Clear box</button></div>
   <div id="msg"></div>
 </div>
@@ -74,8 +83,13 @@ li button{background:none;color:var(--mut);padding:2px 8px;font-size:16px}
 
 <script>
 const N = window.Native || {  // browser preview mock
-  _q:[], add(t){const m=t.split(/[\s,;]+/).filter(x=>/@/.test(x));this._q.push(...m);return JSON.stringify({added:m.length,duplicates:0,invalid:0})},
-  list(){return JSON.stringify(this._q.slice(0,100))},remove(e){this._q=this._q.filter(x=>x!==e)},clear(){this._q=[]},
+  _q:[],
+  add(t){const lines=t.split(/\r?\n/).filter(Boolean);let added=0;
+    lines.forEach(l=>{const[e,p='']=l.split('|');if(/@/.test(e))
+      {this._q.push({email:e.trim().toLowerCase(),password:p.trim()});added++}});
+    return JSON.stringify({added,duplicates:0,invalid:lines.length-added})},
+  list(){return JSON.stringify(this._q.slice(0,100))},
+  remove(e){this._q=this._q.filter(x=>x.email!==e)},clear(){this._q=[]},
   status(){return JSON.stringify({count:this._q.length,overlay:false,a11y:false,notif:true,running:false})},
   requestOverlay(){},openAccessibility(){},requestNotifications(){},startOverlay(){},stopOverlay(){}};
 const $=id=>document.getElementById(id);
@@ -84,9 +98,9 @@ let st={}, armed=false;
 function render(){
   st = JSON.parse(N.status());
   $('count').textContent = st.count.toLocaleString();
-  for (const [k,id] of [['overlay','overlay'],['a11y','a11y'],['notif','notif']]){
-    $('d-'+id).classList.toggle('ok', !!st[k]);
-    $('b-'+id).style.display = st[k] ? 'none' : '';
+  for (const id of ['overlay','a11y','notif']){
+    $('d-'+id).classList.toggle('ok', !!st[id]);
+    $('b-'+id).style.display = st[id] ? 'none' : '';
   }
   $('state').textContent = st.running ? 'Tool on' : 'Tool off';
   $('state').classList.toggle('on', !!st.running);
@@ -94,21 +108,27 @@ function render(){
   t.className = st.running ? 'stop' : 'primary';
   const list = JSON.parse(N.list(100)), ul=$('list'); ul.textContent='';
   if(!list.length){const d=document.createElement('div');d.className='empty';d.textContent='Queue is empty';ul.appendChild(d);return}
-  list.forEach((e,i)=>{
+  list.forEach((row,i)=>{
     const li=document.createElement('li'); if(!i) li.className='next';
     const a=document.createElement('span');a.className='i';a.textContent=i?i+1:'▶';
-    const b=document.createElement('span');b.className='e';b.textContent=e;
+    const f=document.createElement('span');f.className='f';
+    const e=document.createElement('div');e.className='e';e.textContent=row.email;
+    const p=document.createElement('div');p.className='p';p.textContent=row.password?('•'.repeat(Math.min(row.password.length,10))):'(no password)';
+    f.append(e,p);
     const x=document.createElement('button');x.textContent='×';x.setAttribute('aria-label','Remove');
-    x.onclick=()=>{N.remove(e);render()};
-    li.append(a,b,x);ul.appendChild(li);
+    x.onclick=()=>{N.remove(row.email);render()};
+    li.append(a,f,x);ul.appendChild(li);
   });
 }
 window.onNative = render;
 
+$('upload').onclick=()=>$('file').click();
+$('file').onchange=()=>{ $('file').value=''; /* native side reads & imports the picked file */ setTimeout(render,600) };
+
 $('add').onclick=()=>{
-  const v=$('bulk').value.trim(); if(!v){$('msg').textContent='Paste some emails first.';return}
+  const v=$('bulk').value.trim(); if(!v){$('msg').textContent='Paste some pairs first.';return}
   const r=JSON.parse(N.add(v));
-  $('msg').textContent=`Added ${r.added} • ${r.duplicates} duplicate${r.duplicates==1?'':'s'} skipped • ${r.invalid} invalid`;
+  $('msg').textContent=`Added ${r.added} • ${r.duplicates} duplicate${r.duplicates==1?'':'s'} skipped • ${r.invalid} invalid line${r.invalid==1?'':'s'}`;
   $('bulk').value=''; render();
 };
 $('paste-in').onclick=()=>{$('bulk').value='';$('msg').textContent=''};

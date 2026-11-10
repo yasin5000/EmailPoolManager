@@ -10,6 +10,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -19,15 +21,22 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
+    private static final int REQ_NOTIF = 1;
+    private static final int REQ_FILE = 2;
+
     private WebView web;
     private final Runnable onQueueChanged = this::pushToWeb;
+    private ValueCallback<Uri[]> filePickCallback;
+    private static final Pattern EMAIL = Pattern.compile(
+            "^[a-z0-9._%+'\\-]+@[a-z0-9\\-]+(\\.[a-z0-9\\-]+)*\\.[a-z]{2,}$");
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -46,8 +55,74 @@ public class MainActivity extends Activity {
                 return !r.getUrl().toString().startsWith("file:///android_asset/");
             }
         });
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> callback, FileChooserParams params) {
+                if (filePickCallback != null) filePickCallback.onReceiveValue(null);
+                filePickCallback = callback;
+                Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("text/plain");
+                try {
+                    startActivityForResult(Intent.createChooser(i, "Select email|password list"), REQ_FILE);
+                } catch (Exception e) {
+                    filePickCallback = null;
+                    Toast.makeText(MainActivity.this, "No file picker app found", Toast.LENGTH_SHORT).show();
+                    return false;
+                }
+                return true;
+            }
+        });
         setContentView(web);
         web.loadUrl("file:///android_asset/index.html");
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_FILE) return;
+        Uri uri = (resultCode == RESULT_OK && data != null) ? data.getData() : null;
+        if (filePickCallback != null) {
+            filePickCallback.onReceiveValue(uri == null ? null : new Uri[]{uri});
+            filePickCallback = null;
+        }
+        if (uri != null) importFile(uri);
+    }
+
+    /** Reads a text file of "email|password" lines (one pair per line) and queues them. */
+    private void importFile(Uri uri) {
+        List<QueueStore.Pair> pairs = new ArrayList<>();
+        int invalid = 0;
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(getContentResolver().openInputStream(uri), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                QueueStore.Pair p = parseLine(line);
+                if (p != null) pairs.add(p); else if (!line.trim().isEmpty()) invalid++;
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "Couldn't read that file", Toast.LENGTH_LONG).show();
+            return;
+        }
+        int added = QueueStore.get(this).addAll(pairs);
+        QueueBus.changed();
+        Toast.makeText(this, "Added " + added + " • " + (pairs.size() - added) + " duplicate(s) • "
+                + invalid + " invalid line(s)", Toast.LENGTH_LONG).show();
+    }
+
+    /** Parses one "email|password" line. Returns null if the line has no valid email. */
+    private QueueStore.Pair parseLine(String line) {
+        String t = line.trim();
+        if (t.isEmpty()) return null;
+        String email, password = "";
+        int bar = t.indexOf('|');
+        if (bar >= 0) {
+            email = t.substring(0, bar).trim().toLowerCase();
+            password = t.substring(bar + 1).trim();
+        } else {
+            email = t.replaceAll("[,;\\s].*$", "").trim().toLowerCase();
+        }
+        email = email.replaceAll("^[<\"'(]+|[>\"')]+$", "");
+        if (!EMAIL.matcher(email).matches()) return null;
+        return new QueueStore.Pair(email, password);
     }
 
     @Override protected void onResume() {
@@ -94,30 +169,33 @@ public class MainActivity extends Activity {
                 Uri.parse("package:" + getPackageName())));
     }
 
-    /** Methods callable from the page as window.Native.* (run on a binder thread). */
+    /** Methods callable from the page as window.Native.* (run on a binder thread unless noted). */
     private class Bridge {
-        private final Pattern EMAIL = Pattern.compile(
-                "^[a-z0-9._%+'\\-]+@[a-z0-9\\-]+(\\.[a-z0-9\\-]+)*\\.[a-z]{2,}$");
 
         @JavascriptInterface public String add(String raw) {
-            Set<String> valid = new LinkedHashSet<>();
+            List<QueueStore.Pair> pairs = new ArrayList<>();
             int invalid = 0;
-            for (String tok : raw.split("[\\s,;]+")) {
-                String t = tok.replaceAll("^[<\"'(]+|[>\"')]+$", "").toLowerCase();
-                if (t.isEmpty()) continue;
-                if (EMAIL.matcher(t).matches()) valid.add(t); else invalid++;
+            for (String line : raw.split("\\r?\\n")) {
+                QueueStore.Pair p = parseLine(line);
+                if (p != null) pairs.add(p); else if (!line.trim().isEmpty()) invalid++;
             }
-            int added = QueueStore.get(MainActivity.this).addAll(new ArrayList<>(valid));
+            int added = QueueStore.get(MainActivity.this).addAll(pairs);
             QueueBus.changed();
             try {
                 return new JSONObject().put("added", added)
-                        .put("duplicates", valid.size() - added).put("invalid", invalid).toString();
+                        .put("duplicates", pairs.size() - added).put("invalid", invalid).toString();
             } catch (Exception e) { return "{}"; }
         }
 
         @JavascriptInterface public String list(int limit) {
-            List<String> l = QueueStore.get(MainActivity.this).list(limit);
-            return new JSONArray(l).toString();
+            List<QueueStore.Pair> l = QueueStore.get(MainActivity.this).list(limit);
+            JSONArray arr = new JSONArray();
+            for (QueueStore.Pair p : l) {
+                JSONObject o = new JSONObject();
+                try { o.put("email", p.email).put("password", p.password); } catch (Exception ignored) { }
+                arr.put(o);
+            }
+            return arr.toString();
         }
 
         @JavascriptInterface public void remove(String email) {
@@ -154,7 +232,7 @@ public class MainActivity extends Activity {
         @JavascriptInterface public void requestNotifications() {
             runOnUiThread(() -> {
                 if (Build.VERSION.SDK_INT >= 33)
-                    requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
+                    requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIF);
             });
         }
 

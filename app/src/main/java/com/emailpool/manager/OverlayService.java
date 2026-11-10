@@ -34,7 +34,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-/** Foreground service that owns the draggable always-on-top COPY / PASTE overlay. */
+/** Foreground service that owns the draggable always-on-top 4-button overlay. */
 public class OverlayService extends Service {
     static final String ACTION_STOP = "com.emailpool.manager.STOP";
     static volatile boolean running;
@@ -48,7 +48,7 @@ public class OverlayService extends Service {
     private WindowManager.LayoutParams lp;
     private DragLayout root;
     private TextView countView;
-    private Button copyBtn, pasteBtn;
+    private Button copyMailBtn, copyPassBtn, pasteMailBtn, pastePassBtn;
     private long lastTap;
     private SharedPreferences prefs;
 
@@ -90,7 +90,7 @@ public class OverlayService extends Service {
 
     @Override public void onConfigurationChanged(Configuration c) {
         super.onConfigurationChanged(c);
-        if (root != null) root.post(() -> { root.clampAndApply(); });
+        if (root != null) root.post(() -> root.clampAndApply());
     }
 
     @Override public void onDestroy() {
@@ -114,7 +114,7 @@ public class OverlayService extends Service {
         Notification.Builder b = new Notification.Builder(this, CHANNEL)
                 .setSmallIcon(R.drawable.ic_stat)
                 .setContentTitle("Email Pool is active")
-                .setContentText(count + " email" + (count == 1 ? "" : "s") + " remaining")
+                .setContentText(count + " pair" + (count == 1 ? "" : "s") + " remaining")
                 .setContentIntent(open)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
@@ -128,27 +128,47 @@ public class OverlayService extends Service {
         int n = QueueStore.get(this).count();
         if (countView != null) {
             countView.setText(n >= 10000 ? (n / 1000) + "k" : String.valueOf(n));
-            copyBtn.setAlpha(n > 0 ? 1f : 0.45f);
+            float a = n > 0 ? 1f : 0.45f;
+            copyMailBtn.setAlpha(a);
+            copyPassBtn.setAlpha(a);
         }
         getSystemService(NotificationManager.class).notify(NOTIF_ID, buildNotification(n));
     }
 
     // ---------------------------------------------------------------- actions
 
-    private void doCopy() {
+    private boolean debounced() {
         long now = SystemClock.uptimeMillis();
-        if (now - lastTap < 300) return;       // ignore accidental double taps
+        if (now - lastTap < 250) return true;  // ignore accidental double taps
         lastTap = now;
-        String email = QueueStore.get(this).popNext();
-        if (email == null) { Toast.makeText(this, "Queue is empty", Toast.LENGTH_SHORT).show(); refresh(); return; }
+        return false;
+    }
+
+    private void doCopyMail() {
+        if (debounced()) return;
+        QueueStore.Pair p = QueueStore.get(this).peek();
+        if (p == null) { Toast.makeText(this, "Queue is empty", Toast.LENGTH_SHORT).show(); return; }
+        QueueStore.lastEmail = p.email;
         ((ClipboardManager) getSystemService(CLIPBOARD_SERVICE))
-                .setPrimaryClip(ClipData.newPlainText("email", email));
-        QueueStore.lastCopied = email;
-        flash(copyBtn, "COPIED", "COPY");
+                .setPrimaryClip(ClipData.newPlainText("email", p.email));
+        flash(copyMailBtn, "COPIED", "COPY\nMAIL");
+    }
+
+    private void doCopyPass() {
+        if (debounced()) return;
+        QueueStore.Pair p = QueueStore.get(this).peek();
+        if (p == null) { Toast.makeText(this, "Queue is empty", Toast.LENGTH_SHORT).show(); return; }
+        QueueStore.lastEmail = p.email;
+        QueueStore.lastPassword = p.password;
+        ((ClipboardManager) getSystemService(CLIPBOARD_SERVICE))
+                .setPrimaryClip(ClipData.newPlainText("password", p.password));
+        flash(copyPassBtn, "COPIED", "COPY\nPASS");
+        QueueStore.get(this).remove(p.email);   // pair is done once its password has been taken
         QueueBus.changed();
     }
 
-    private void doPaste() {
+    private void doPaste(String text, String emptyMsg, Button btn, String temp, String normal) {
+        if (text == null) { Toast.makeText(this, emptyMsg, Toast.LENGTH_SHORT).show(); return; }
         EmailAccessibilityService s = EmailAccessibilityService.instance;
         if (s == null) {
             Toast.makeText(this, "Turn on Email Pool in Accessibility settings to enable PASTE", Toast.LENGTH_LONG).show();
@@ -157,8 +177,12 @@ public class OverlayService extends Service {
             } catch (Exception ignored) { }
             return;
         }
-        switch (s.pasteIntoFocused(QueueStore.lastCopied)) {
-            case EmailAccessibilityService.OK: flash(pasteBtn, "PASTED", "PASTE"); break;
+        // Put the exact field we want on the clipboard first, since the clipboard may currently
+        // hold the *other* field (e.g. password was copied after email).
+        ((ClipboardManager) getSystemService(CLIPBOARD_SERVICE))
+                .setPrimaryClip(ClipData.newPlainText("value", text));
+        switch (s.pasteIntoFocused(text)) {
+            case EmailAccessibilityService.OK: flash(btn, temp, normal); break;
             case EmailAccessibilityService.NO_FIELD:
                 Toast.makeText(this, "Tap a text field first", Toast.LENGTH_SHORT).show(); break;
             default:
@@ -176,7 +200,7 @@ public class OverlayService extends Service {
     private int dp(float v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
 
     private GradientDrawable grad(int c1, int c2, float radiusDp) {
-        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{c1, c2});
+        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{c1, c2});
         g.setCornerRadius(dp(radiusDp));
         return g;
     }
@@ -186,16 +210,18 @@ public class OverlayService extends Service {
         b.setText(label);
         b.setAllCaps(false);
         b.setTextColor(0xFFFFFFFF);
-        b.setTextSize(12f);
+        b.setTextSize(10f);
         b.setTypeface(Typeface.DEFAULT_BOLD);
-        b.setLetterSpacing(0.05f);
+        b.setLetterSpacing(0.02f);
+        b.setLineSpacing(0, 0.95f);
+        b.setGravity(Gravity.CENTER);
         b.setStateListAnimator(null);
         b.setMinWidth(0); b.setMinHeight(0); b.setMinimumWidth(0); b.setMinimumHeight(0);
-        b.setPadding(dp(10), 0, dp(10), 0);
-        b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x66FFFFFF), grad(c1, c2, 18), null));
+        b.setPadding(dp(4), 0, dp(4), 0);
+        b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x66FFFFFF), grad(c1, c2, 14), null));
         b.setOnClickListener(l);
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(72), dp(36));
-        p.setMargins(dp(4), 0, dp(4), 0);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(64), dp(38));
+        p.setMargins(dp(3), dp(3), dp(3), dp(3));
         b.setLayoutParams(p);
         return b;
     }
@@ -207,7 +233,7 @@ public class OverlayService extends Service {
         root.setPadding(dp(8), dp(6), dp(6), dp(6));
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(0xF2121826);
-        bg.setCornerRadius(dp(26));
+        bg.setCornerRadius(dp(20));
         bg.setStroke(dp(1), 0x33FFFFFF);
         root.setBackground(bg);
         root.setElevation(dp(8));
@@ -215,7 +241,7 @@ public class OverlayService extends Service {
         LinearLayout counter = new LinearLayout(this);       // drag handle + remaining count
         counter.setOrientation(LinearLayout.VERTICAL);
         counter.setGravity(Gravity.CENTER);
-        counter.setMinimumWidth(dp(38));
+        counter.setMinimumWidth(dp(34));
         countView = new TextView(this);
         countView.setTextColor(0xFFFFFFFF);
         countView.setTextSize(15f);
@@ -225,16 +251,34 @@ public class OverlayService extends Service {
         cap.setText("LEFT");
         cap.setTextColor(0x99FFFFFF);
         cap.setTextSize(8f);
-        cap.setLetterSpacing(0.1f);
+        cap.setLetterSpacing(0.08f);
         cap.setGravity(Gravity.CENTER);
         counter.addView(countView);
         counter.addView(cap);
         root.addView(counter);
 
-        copyBtn = makeButton("COPY", 0xFF6366F1, 0xFF8B5CF6, v -> doCopy());
-        pasteBtn = makeButton("PASTE", 0xFF0EA5A4, 0xFF22C55E, v -> doPaste());
-        root.addView(copyBtn);
-        root.addView(pasteBtn);
+        LinearLayout grid = new LinearLayout(this);
+        grid.setOrientation(LinearLayout.VERTICAL);
+
+        LinearLayout row1 = new LinearLayout(this);
+        row1.setOrientation(LinearLayout.HORIZONTAL);
+        copyMailBtn = makeButton("COPY\nMAIL", 0xFF6366F1, 0xFF4F46E5, v -> doCopyMail());
+        copyPassBtn = makeButton("COPY\nPASS", 0xFF8B5CF6, 0xFF7C3AED, v -> doCopyPass());
+        row1.addView(copyMailBtn);
+        row1.addView(copyPassBtn);
+
+        LinearLayout row2 = new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+        pasteMailBtn = makeButton("PASTE\nMAIL", 0xFF0EA5A4, 0xFF0D9488, v ->
+                doPaste(QueueStore.lastEmail, "Copy an email first", pasteMailBtn, "PASTED", "PASTE\nMAIL"));
+        pastePassBtn = makeButton("PASTE\nPASS", 0xFF22C55E, 0xFF16A34A, v ->
+                doPaste(QueueStore.lastPassword, "Copy a password first", pastePassBtn, "PASTED", "PASTE\nPASS"));
+        row2.addView(pasteMailBtn);
+        row2.addView(pastePassBtn);
+
+        grid.addView(row1);
+        grid.addView(row2);
+        root.addView(grid);
 
         DisplayMetrics dm = getResources().getDisplayMetrics();
         lp = new WindowManager.LayoutParams(
@@ -245,7 +289,7 @@ public class OverlayService extends Service {
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
         lp.x = prefs.getInt("x", dp(12));
-        lp.y = prefs.getInt("y", dm.heightPixels / 3);
+        lp.y = prefs.getInt("y", dm.heightPixels / 4);
         wm.addView(root, lp);
         root.post(root::clampAndApply);
     }
