@@ -34,6 +34,9 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 /** Foreground service that owns the draggable always-on-top 4-button overlay. */
 public class OverlayService extends Service {
     static final String ACTION_STOP = "com.emailpool.manager.STOP";
@@ -45,6 +48,8 @@ public class OverlayService extends Service {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Runnable onQueueChanged = this::refresh;
     private final Runnable ticker = this::tick;
+    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private long lastSyncAt;
     private WindowManager wm;
     private WindowManager.LayoutParams lp;
     private DragLayout root;
@@ -108,6 +113,11 @@ public class OverlayService extends Service {
     @Override public void onDestroy() {
         running = false;
         main.removeCallbacks(ticker);
+        if (LicenseServer.configured()) {                       // tell the server the tool is no longer running
+            final android.content.Context app = getApplicationContext();
+            io.execute(() -> LicenseManager.sync(app, false));
+        }
+        io.shutdown();
         QueueBus.unregister(onQueueChanged);
         if (root != null) {
             try { wm.removeView(root); } catch (Exception ignored) { }
@@ -122,6 +132,12 @@ public class OverlayService extends Service {
     private void tick() {
         LicenseManager.Status s = LicenseManager.status(this);
         if (s.state != LicenseManager.ACTIVE) { expire(); return; }
+        long nowMs = SystemClock.elapsedRealtime();
+        if (LicenseServer.configured() && (lastSyncAt == 0 || nowMs - lastSyncAt >= 5 * 60_000L)) {
+            lastSyncAt = nowMs;                                  // heartbeat: shows 'running' in keygen.html, applies disable/move
+            final android.content.Context app = getApplicationContext();
+            io.execute(() -> LicenseManager.sync(app, true));
+        }
         refresh();
         long next = s.lifetime ? 60_000L : Math.min(15_000L, s.remainingMs + 50);
         main.postDelayed(ticker, Math.max(next, 500));

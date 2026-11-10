@@ -10,6 +10,7 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
@@ -37,6 +38,7 @@ public class MainActivity extends Activity {
     private WebView web;
     private final Runnable onQueueChanged = this::pushToWeb;
     private ValueCallback<Uri[]> filePickCallback;
+    private long lastSync;
     private static final Pattern EMAIL = Pattern.compile(
             "^[a-z0-9._%+'\\-]+@[a-z0-9\\-]+(\\.[a-z0-9\\-]+)*\\.[a-z]{2,}$");
 
@@ -132,6 +134,7 @@ public class MainActivity extends Activity {
         QueueBus.register(onQueueChanged);
         pushToWeb();
         web.onResume();
+        syncInBackground();
     }
 
     @Override protected void onPause() {
@@ -148,6 +151,16 @@ public class MainActivity extends Activity {
     @Override public void onRequestPermissionsResult(int code, String[] p, int[] r) {
         super.onRequestPermissionsResult(code, p, r);
         pushToWeb();
+    }
+
+    /** Lets the server know this phone is alive and refreshes the time left (at most every 30 s). */
+    private void syncInBackground() {
+        if (!LicenseServer.configured() || SystemClock.elapsedRealtime() - lastSync < 30_000) return;
+        lastSync = SystemClock.elapsedRealtime();
+        new Thread(() -> {
+            LicenseManager.sync(getApplicationContext(), OverlayService.running);
+            QueueBus.changed();
+        }).start();
     }
 
     private void pushToWeb() {
@@ -225,15 +238,27 @@ public class MainActivity extends Activity {
             LicenseManager.Status s = LicenseManager.status(MainActivity.this);
             try {
                 return new JSONObject().put("state", s.state).put("lifetime", s.lifetime)
-                        .put("expiry", s.expiryMs).put("remaining", s.remainingMs).toString();
+                        .put("expiry", s.expiryMs).put("remaining", s.remainingMs)
+                        .put("server", LicenseServer.configured())
+                        .put("device", LicenseManager.deviceLabel(MainActivity.this)).toString();
             } catch (Exception e) { return "{}"; }
         }
 
+        /** Runs the (possibly slow) server check in the background; the page gets the answer in window.onActivate(). */
         @JavascriptInterface public String activate(String key) {
-            LicenseManager.Result r = LicenseManager.activate(MainActivity.this, key);
-            QueueBus.changed();   // refresh the notification / overlay
-            try { return new JSONObject().put("ok", r.ok).put("msg", r.msg).toString(); }
-            catch (Exception e) { return "{}"; }
+            final String k = key;
+            new Thread(() -> {
+                LicenseManager.Result r = LicenseManager.activate(getApplicationContext(), k);
+                String json;
+                try { json = new JSONObject().put("ok", r.ok).put("msg", r.msg).toString(); }
+                catch (Exception e) { json = "{\"ok\":false,\"msg\":\"Error\"}"; }
+                final String js = "window.onActivate&&window.onActivate(" + json + ")";
+                runOnUiThread(() -> {
+                    QueueBus.changed();   // refresh the notification / overlay
+                    if (web != null) web.evaluateJavascript(js, null);
+                });
+            }).start();
+            return "{\"pending\":true}";
         }
 
         @JavascriptInterface public String clipboard() {

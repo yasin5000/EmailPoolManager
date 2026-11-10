@@ -10,12 +10,24 @@ android {
         versionCode 1
         versionName '1.0'
     }
+    // One fixed signing key for every build. Without it GitHub creates a new random key each run,
+    // Android then treats each build as a different app and hands out a new device id every time,
+    // which would break the one-key-one-phone lock. It also lets new builds install over old ones.
+    signingConfigs {
+        shared {
+            storeFile file('shared.keystore')
+            storePassword 'emailpool'
+            keyAlias 'emailpool'
+            keyPassword 'emailpool'
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.shared
+        }
         release {
             minifyEnabled false
-            // Signed with the debug key so the release APK installs out of the box.
-            // Replace with your own keystore for distribution.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.shared
         }
     }
     compileOptions {

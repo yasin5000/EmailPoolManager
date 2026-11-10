@@ -93,6 +93,7 @@ body.peek .card,body.peek header .sub,body.peek header h1,body.peek #state{opaci
   <div class="time none" id="lic-time">No active key</div>
   <div class="bar" id="lic-bar" style="display:none"><i id="lic-fill"></i></div>
   <div class="sub" id="lic-sub">Enter an activation key to use the floating tool.</div>
+  <div class="sub" id="lic-dev" style="margin-top:4px"></div>
   <input class="key" id="key" placeholder="Paste activation key" spellcheck="false" autocapitalize="off" autocomplete="off">
   <div class="actions"><button class="primary" id="activate">Activate</button><button class="ghost" id="key-paste">Paste</button></div>
   <div id="lic-msg"></div>
@@ -144,8 +145,8 @@ const N = window.Native || {  // browser preview mock
   remove(e){this._q=this._q.filter(x=>x.email!==e)},clear(){this._q=[]},
   status(){return JSON.stringify({count:this._q.length,overlay:false,a11y:false,notif:true,running:false})},
   _exp:0,
-  license(){const r=this._exp-Date.now();return JSON.stringify(r>0?{state:1,lifetime:false,expiry:this._exp,remaining:r}:{state:this._exp?2:0})},
-  activate(k){if(!k.trim())return JSON.stringify({ok:false,msg:'Invalid key'});this._exp=Date.now()+3600e3;return JSON.stringify({ok:true,msg:'Activated (preview)'})},
+  license(){const r=this._exp-Date.now();return JSON.stringify(Object.assign({device:'Preview phone • a1b2c3',server:true},r>0?{state:1,lifetime:false,expiry:this._exp,remaining:r}:{state:this._exp?2:0}))},
+  activate(k){setTimeout(()=>window.onActivate(k.trim()?(this._exp=Date.now()+3600e3,{ok:true,msg:'Activated (preview)'}):{ok:false,msg:'Invalid key'}),600);return JSON.stringify({pending:true})},
   clipboard(){return ''},
   requestOverlay(){},openAccessibility(){},requestNotifications(){},startOverlay(){},stopOverlay(){}};
 const $=id=>document.getElementById(id);
@@ -186,6 +187,7 @@ setInterval(renderLic,1000);
 function render(){
   st = JSON.parse(N.status());
   lic = JSON.parse(N.license()); licAt = performance.now();
+  $('lic-dev').textContent = lic.device ? ('Device: '+lic.device+(lic.server?' • key is locked to this phone':'')) : '';
   if(lic.state!==1 || lic.lifetime) licTotal=0;
   renderLic();
   $('count').textContent = st.count.toLocaleString();
@@ -226,8 +228,13 @@ $('add').onclick=()=>{
 };
 $('paste-in').onclick=()=>{$('bulk').value='';$('msg').textContent=''};
 $('activate').onclick=()=>{
-  const k=$('key').value.trim(); if(!k){$('lic-msg').textContent='Paste your key first.';return}
+  const k=$('key').value.trim(); if(!k){$('lic-msg').style.color='var(--mut)';$('lic-msg').textContent='Paste your key first.';return}
   const r=JSON.parse(N.activate(k));
+  if(r.pending){ $('activate').disabled=true; $('activate').textContent='Checking…'; $('lic-msg').style.color='var(--mut)'; $('lic-msg').textContent='Contacting server…'; return; }
+  window.onActivate(r);
+};
+window.onActivate=r=>{                      // called by the app when the check finishes
+  $('activate').disabled=false; $('activate').textContent='Activate';
   $('lic-msg').style.color = r.ok ? 'var(--ok)' : '#f87171';
   $('lic-msg').textContent = r.msg;
   if(r.ok){ $('key').value=''; licTotal=0; }
