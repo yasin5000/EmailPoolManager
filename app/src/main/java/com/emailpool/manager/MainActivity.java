@@ -2,6 +2,8 @@ package com.emailpool.manager;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -219,6 +221,31 @@ public class MainActivity extends Activity {
             } catch (Exception e) { return "{}"; }
         }
 
+        @JavascriptInterface public String license() {
+            LicenseManager.Status s = LicenseManager.status(MainActivity.this);
+            try {
+                return new JSONObject().put("state", s.state).put("lifetime", s.lifetime)
+                        .put("expiry", s.expiryMs).put("remaining", s.remainingMs).toString();
+            } catch (Exception e) { return "{}"; }
+        }
+
+        @JavascriptInterface public String activate(String key) {
+            LicenseManager.Result r = LicenseManager.activate(MainActivity.this, key);
+            QueueBus.changed();   // refresh the notification / overlay
+            try { return new JSONObject().put("ok", r.ok).put("msg", r.msg).toString(); }
+            catch (Exception e) { return "{}"; }
+        }
+
+        @JavascriptInterface public String clipboard() {
+            try {
+                ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                ClipData d = cm.getPrimaryClip();
+                if (d == null || d.getItemCount() == 0) return "";
+                CharSequence t = d.getItemAt(0).coerceToText(MainActivity.this);
+                return t == null ? "" : t.toString();
+            } catch (Exception e) { return ""; }
+        }
+
         @JavascriptInterface public void requestOverlay() { runOnUiThread(MainActivity.this::openOverlaySettings); }
 
         @JavascriptInterface public void openAccessibility() {
@@ -238,6 +265,11 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface public void startOverlay() {
             runOnUiThread(() -> {
+                if (!LicenseManager.isActive(MainActivity.this)) {
+                    Toast.makeText(MainActivity.this, "Activate a key first", Toast.LENGTH_SHORT).show();
+                    pushToWeb();
+                    return;
+                }
                 if (!Settings.canDrawOverlays(MainActivity.this)) { openOverlaySettings(); return; }
                 if (!notifGranted()) requestNotifications();
                 startForegroundService(new Intent(MainActivity.this, OverlayService.class));

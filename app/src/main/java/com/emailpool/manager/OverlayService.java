@@ -44,10 +44,14 @@ public class OverlayService extends Service {
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Runnable onQueueChanged = this::refresh;
+    private final Runnable ticker = this::tick;
     private WindowManager wm;
     private WindowManager.LayoutParams lp;
     private DragLayout root;
-    private TextView countView;
+    private TextView countView, handleView;
+    private LinearLayout counterBox, gridBox;
+    private GradientDrawable rootBg;
+    private boolean collapsed;
     private Button copyMailBtn, copyPassBtn, pasteMailBtn, pastePassBtn;
     private long lastTap;
     private SharedPreferences prefs;
@@ -76,6 +80,12 @@ public class OverlayService extends Service {
         } else {
             startForeground(NOTIF_ID, n);
         }
+        if (!LicenseManager.isActive(this)) {
+            Toast.makeText(this, "Activation key needed or expired", Toast.LENGTH_LONG).show();
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         if (!Settings.canDrawOverlays(this)) {
             Toast.makeText(this, "Allow “Display over other apps” first", Toast.LENGTH_LONG).show();
             stopSelf();
@@ -85,6 +95,8 @@ public class OverlayService extends Service {
         QueueBus.register(onQueueChanged);
         running = true;
         refresh();
+        main.removeCallbacks(ticker);
+        main.post(ticker);
         return START_STICKY;   // system restarts the tool if the process is killed
     }
 
@@ -95,6 +107,7 @@ public class OverlayService extends Service {
 
     @Override public void onDestroy() {
         running = false;
+        main.removeCallbacks(ticker);
         QueueBus.unregister(onQueueChanged);
         if (root != null) {
             try { wm.removeView(root); } catch (Exception ignored) { }
@@ -103,7 +116,37 @@ public class OverlayService extends Service {
         super.onDestroy();
     }
 
+    // ---------------------------------------------------------------- license
+
+    /** Keeps the notification's time-left fresh and shuts the tool down the moment the key runs out. */
+    private void tick() {
+        LicenseManager.Status s = LicenseManager.status(this);
+        if (s.state != LicenseManager.ACTIVE) { expire(); return; }
+        refresh();
+        long next = s.lifetime ? 60_000L : Math.min(15_000L, s.remainingMs + 50);
+        main.postDelayed(ticker, Math.max(next, 500));
+    }
+
+    private void expire() {
+        Toast.makeText(this, "Activation expired — enter a new key", Toast.LENGTH_LONG).show();
+        stopForeground(STOP_FOREGROUND_REMOVE);
+        stopSelf();
+        QueueBus.changed();
+    }
+
+    /** Every action re-checks the license so an expired key can't be used even for one more tap. */
+    private boolean licensed() {
+        if (LicenseManager.isActive(this)) return true;
+        expire();
+        return false;
+    }
+
     // ---------------------------------------------------------------- notification
+
+    private String timeLeft() {
+        LicenseManager.Status ls = LicenseManager.status(this);
+        return LicenseManager.describe(ls) + (ls.lifetime ? "" : " left");
+    }
 
     private Notification buildNotification(int count) {
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class),
@@ -114,7 +157,7 @@ public class OverlayService extends Service {
         Notification.Builder b = new Notification.Builder(this, CHANNEL)
                 .setSmallIcon(R.drawable.ic_stat)
                 .setContentTitle("Email Pool is active")
-                .setContentText(count + " pair" + (count == 1 ? "" : "s") + " remaining")
+                .setContentText(count + " pair" + (count == 1 ? "" : "s") + " remaining • " + timeLeft())
                 .setContentIntent(open)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
@@ -127,7 +170,9 @@ public class OverlayService extends Service {
     private void refresh() {
         int n = QueueStore.get(this).count();
         if (countView != null) {
-            countView.setText(n >= 10000 ? (n / 1000) + "k" : String.valueOf(n));
+            String t = n >= 10000 ? (n / 1000) + "k" : String.valueOf(n);
+            countView.setText(t);
+            if (handleView != null) handleView.setText(t);
             float a = n > 0 ? 1f : 0.45f;
             copyMailBtn.setAlpha(a);
             copyPassBtn.setAlpha(a);
@@ -145,7 +190,7 @@ public class OverlayService extends Service {
     }
 
     private void doCopyMail() {
-        if (debounced()) return;
+        if (!licensed() || debounced()) return;
         QueueStore.Pair p = QueueStore.get(this).peek();
         if (p == null) { Toast.makeText(this, "Queue is empty", Toast.LENGTH_SHORT).show(); return; }
         QueueStore.lastEmail = p.email;
@@ -155,7 +200,7 @@ public class OverlayService extends Service {
     }
 
     private void doCopyPass() {
-        if (debounced()) return;
+        if (!licensed() || debounced()) return;
         QueueStore.Pair p = QueueStore.get(this).peek();
         if (p == null) { Toast.makeText(this, "Queue is empty", Toast.LENGTH_SHORT).show(); return; }
         QueueStore.lastEmail = p.email;
@@ -168,6 +213,7 @@ public class OverlayService extends Service {
     }
 
     private void doPaste(String text, String emptyMsg, Button btn, String temp, String normal) {
+        if (!licensed()) return;
         if (text == null) { Toast.makeText(this, emptyMsg, Toast.LENGTH_SHORT).show(); return; }
         EmailAccessibilityService s = EmailAccessibilityService.instance;
         if (s == null) {
@@ -235,10 +281,12 @@ public class OverlayService extends Service {
         bg.setColor(0xF2121826);
         bg.setCornerRadius(dp(20));
         bg.setStroke(dp(1), 0x33FFFFFF);
+        rootBg = bg;
         root.setBackground(bg);
         root.setElevation(dp(8));
 
         LinearLayout counter = new LinearLayout(this);       // drag handle + remaining count
+        counterBox = counter;
         counter.setOrientation(LinearLayout.VERTICAL);
         counter.setGravity(Gravity.CENTER);
         counter.setMinimumWidth(dp(34));
@@ -258,6 +306,7 @@ public class OverlayService extends Service {
         root.addView(counter);
 
         LinearLayout grid = new LinearLayout(this);
+        gridBox = grid;
         grid.setOrientation(LinearLayout.VERTICAL);
 
         LinearLayout row1 = new LinearLayout(this);
@@ -280,17 +329,41 @@ public class OverlayService extends Service {
         grid.addView(row2);
         root.addView(grid);
 
+        // Small round handle shown while the tool is hidden; tap it to bring the buttons back.
+        handleView = new TextView(this);
+        handleView.setTextColor(0xFFFFFFFF);
+        handleView.setTextSize(13f);
+        handleView.setTypeface(Typeface.DEFAULT_BOLD);
+        handleView.setGravity(Gravity.CENTER);
+        handleView.setLayoutParams(new LinearLayout.LayoutParams(dp(40), dp(40)));
+        handleView.setVisibility(View.GONE);
+        root.addView(handleView);
+
         DisplayMetrics dm = getResources().getDisplayMetrics();
         lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 // NOT_FOCUSABLE keeps keyboard/input focus in the app underneath.
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                        | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,   // tap anywhere else -> hide
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
         lp.x = prefs.getInt("x", dp(12));
         lp.y = prefs.getInt("y", dm.heightPixels / 4);
         wm.addView(root, lp);
+        root.post(root::clampAndApply);
+    }
+
+    /** Hide = shrink to a small round handle; show = full 4-button panel. */
+    private void setCollapsed(boolean c) {
+        if (root == null || collapsed == c) return;
+        collapsed = c;
+        counterBox.setVisibility(c ? View.GONE : View.VISIBLE);
+        gridBox.setVisibility(c ? View.GONE : View.VISIBLE);
+        handleView.setVisibility(c ? View.VISIBLE : View.GONE);
+        rootBg.setCornerRadius(dp(c ? 24 : 20));
+        if (c) root.setPadding(dp(4), dp(4), dp(4), dp(4));
+        else root.setPadding(dp(8), dp(6), dp(6), dp(6));
         root.post(root::clampAndApply);
     }
 
@@ -321,6 +394,9 @@ public class OverlayService extends Service {
 
         @Override public boolean onTouchEvent(MotionEvent e) {
             switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_OUTSIDE:           // touch landed anywhere outside the tool
+                    setCollapsed(true);
+                    return true;
                 case MotionEvent.ACTION_DOWN: return true;
                 case MotionEvent.ACTION_MOVE:
                     if (!dragging && (Math.abs(e.getRawX() - downX) > slop || Math.abs(e.getRawY() - downY) > slop)) dragging = true;
@@ -333,6 +409,7 @@ public class OverlayService extends Service {
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
                     if (dragging) prefs.edit().putInt("x", lp.x).putInt("y", lp.y).apply();
+                    else if (collapsed && e.getActionMasked() == MotionEvent.ACTION_UP) setCollapsed(false);
                     dragging = false;
                     return true;
                 default: return true;

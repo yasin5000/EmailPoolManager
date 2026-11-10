@@ -46,12 +46,34 @@ li .p{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mut)
 li.next{background:#6366f122;outline:1px solid #6366f155}
 li button{background:none;color:var(--mut);padding:2px 8px;font-size:16px}
 .empty{color:var(--mut);text-align:center;padding:18px 0}
+.lic-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.lic-top h2{margin:0}
+.pill.bad{background:#ef444422;color:#f87171}
+.pill.warn{background:#f59e0b22;color:var(--warn)}
+.time{font-size:30px;font-weight:800;line-height:1.1;letter-spacing:.5px;font-variant-numeric:tabular-nums}
+.time.life{background:linear-gradient(90deg,#fbbf24,#f59e0b);-webkit-background-clip:text;color:transparent}
+.time.low{color:var(--warn)}.time.none{color:var(--mut);font-size:20px}
+.bar{height:6px;border-radius:9px;background:#ffffff14;margin:10px 0 4px;overflow:hidden}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--a),var(--b));width:0;transition:width .6s}
+input.key{width:100%;background:#0b1020;color:var(--tx);border:1px solid var(--line);border-radius:12px;padding:11px;font:12px ui-monospace,monospace;outline:none;margin-top:10px}
+input.key:focus{border-color:var(--a)}
+button:disabled{opacity:.45}
 .hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}.hd h2{margin:0}
 </style></head><body>
 <header>
   <div><h1>Email Pool</h1><div class="sub">Queue • copy • paste</div></div>
   <span id="state" class="pill">Tool off</span>
 </header>
+
+<div class="card" id="lic">
+  <div class="lic-top"><h2>Activation</h2><span id="lic-pill" class="pill">Not activated</span></div>
+  <div class="time none" id="lic-time">No active key</div>
+  <div class="bar" id="lic-bar" style="display:none"><i id="lic-fill"></i></div>
+  <div class="sub" id="lic-sub">Enter an activation key to use the floating tool.</div>
+  <input class="key" id="key" placeholder="Paste activation key" spellcheck="false" autocapitalize="off" autocomplete="off">
+  <div class="actions"><button class="primary" id="activate">Activate</button><button class="ghost" id="key-paste">Paste</button></div>
+  <div id="lic-msg"></div>
+</div>
 
 <div class="card hero">
   <div><div class="num" id="count">0</div><small>pairs remaining</small></div>
@@ -91,12 +113,51 @@ const N = window.Native || {  // browser preview mock
   list(){return JSON.stringify(this._q.slice(0,100))},
   remove(e){this._q=this._q.filter(x=>x.email!==e)},clear(){this._q=[]},
   status(){return JSON.stringify({count:this._q.length,overlay:false,a11y:false,notif:true,running:false})},
+  _exp:0,
+  license(){const r=this._exp-Date.now();return JSON.stringify(r>0?{state:1,lifetime:false,expiry:this._exp,remaining:r}:{state:this._exp?2:0})},
+  activate(k){if(!k.trim())return JSON.stringify({ok:false,msg:'Invalid key'});this._exp=Date.now()+3600e3;return JSON.stringify({ok:true,msg:'Activated (preview)'})},
+  clipboard(){return ''},
   requestOverlay(){},openAccessibility(){},requestNotifications(){},startOverlay(){},stopOverlay(){}};
 const $=id=>document.getElementById(id);
-let st={}, armed=false;
+let st={}, armed=false, lic={state:0}, licAt=0, licTotal=0;
+
+function fmt(ms){
+  let t=Math.max(0,Math.ceil(ms/1000));
+  const d=Math.floor(t/86400),h=Math.floor(t%86400/3600),m=Math.floor(t%3600/60),s=t%60,p=n=>String(n).padStart(2,'0');
+  if(d>0) return d+'d '+p(h)+'h '+p(m)+'m '+p(s)+'s';
+  if(h>0) return h+'h '+p(m)+'m '+p(s)+'s';
+  return m+'m '+p(s)+'s';
+}
+function renderLic(){
+  const T=$('lic-time'),P=$('lic-pill'),S=$('lic-sub'),B=$('lic-bar');
+  P.className='pill'; T.className='time'; B.style.display='none';
+  if(lic.state===1 && lic.lifetime){
+    T.textContent='Lifetime'; T.classList.add('life'); P.textContent='Active'; P.classList.add('on'); S.textContent='Never expires.';
+  } else if(lic.state===1){
+    const rem=lic.remaining-(performance.now()-licAt);
+    if(rem<=0){ render(); return; }
+    T.textContent=fmt(rem); P.textContent='Active'; P.classList.add('on');
+    if(rem<10*60e3) T.classList.add('low');
+    S.textContent='Expires '+new Date(lic.expiry).toLocaleString();
+    licTotal=Math.max(licTotal,rem); B.style.display=''; $('lic-fill').style.width=Math.min(100,rem/licTotal*100)+'%';
+  } else if(lic.state===2){
+    T.textContent='Expired'; T.classList.add('none'); P.textContent='Expired'; P.classList.add('bad');
+    S.textContent='Enter a new key to continue.';
+  } else if(lic.state===3){
+    T.textContent='Clock error'; T.classList.add('none'); P.textContent='Check time'; P.classList.add('warn');
+    S.textContent='Phone date/time was moved back. Set it to automatic and reopen the app.';
+  } else {
+    T.textContent='No active key'; T.classList.add('none'); P.textContent='Not activated';
+    S.textContent='Enter an activation key to use the floating tool.';
+  }
+}
+setInterval(renderLic,1000);
 
 function render(){
   st = JSON.parse(N.status());
+  lic = JSON.parse(N.license()); licAt = performance.now();
+  if(lic.state!==1 || lic.lifetime) licTotal=0;
+  renderLic();
   $('count').textContent = st.count.toLocaleString();
   for (const id of ['overlay','a11y','notif']){
     $('d-'+id).classList.toggle('ok', !!st[id]);
@@ -104,8 +165,10 @@ function render(){
   }
   $('state').textContent = st.running ? 'Tool on' : 'Tool off';
   $('state').classList.toggle('on', !!st.running);
-  const t=$('toggle'); t.textContent = st.running ? 'Stop floating tool' : 'Start floating tool';
+  const t=$('toggle'), ok = lic.state===1;
+  t.textContent = st.running ? 'Stop floating tool' : (ok ? 'Start floating tool' : 'Activate a key to start');
   t.className = st.running ? 'stop' : 'primary';
+  t.disabled = !st.running && !ok;
   const list = JSON.parse(N.list(100)), ul=$('list'); ul.textContent='';
   if(!list.length){const d=document.createElement('div');d.className='empty';d.textContent='Queue is empty';ul.appendChild(d);return}
   list.forEach((row,i)=>{
@@ -132,6 +195,15 @@ $('add').onclick=()=>{
   $('bulk').value=''; render();
 };
 $('paste-in').onclick=()=>{$('bulk').value='';$('msg').textContent=''};
+$('activate').onclick=()=>{
+  const k=$('key').value.trim(); if(!k){$('lic-msg').textContent='Paste your key first.';return}
+  const r=JSON.parse(N.activate(k));
+  $('lic-msg').style.color = r.ok ? 'var(--ok)' : '#f87171';
+  $('lic-msg').textContent = r.msg;
+  if(r.ok){ $('key').value=''; licTotal=0; }
+  render();
+};
+$('key-paste').onclick=()=>{ const t=(N.clipboard()||'').trim(); if(t) $('key').value=t; else $('lic-msg').textContent='Clipboard is empty.'; };
 $('b-overlay').onclick=()=>N.requestOverlay();
 $('b-a11y').onclick=()=>N.openAccessibility();
 $('b-notif').onclick=()=>N.requestNotifications();
