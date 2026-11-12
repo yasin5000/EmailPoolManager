@@ -102,6 +102,21 @@ final class LicenseManager {
         } catch (Exception ignored) { }
     }
 
+    /** Comma-separated ids of the keys stored on this phone (what the server expects in "k"). */
+    static String keyIds(Context c) {
+        JSONArray a = readKeys(p(c));
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < a.length() && i < 12; i++) {
+            JSONObject o = a.optJSONObject(i);
+            if (o == null) continue;
+            String id = o.optString("id");
+            if (id.isEmpty()) continue;
+            if (sb.length() > 0) sb.append(',');
+            sb.append(id);
+        }
+        return sb.toString();
+    }
+
     // ------------------------------------------------------------------ state
 
     /** Current state. Also records the latest time seen so rolling the phone clock back is caught. */

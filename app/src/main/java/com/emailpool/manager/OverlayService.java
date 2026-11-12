@@ -57,7 +57,8 @@ public class OverlayService extends Service {
     private LinearLayout counterBox, gridBox;
     private GradientDrawable rootBg;
     private boolean collapsed;
-    private Button copyMailBtn, copyPassBtn, pasteMailBtn, pastePassBtn;
+    private Button copyMailBtn, copyPassBtn, pasteMailBtn, pastePassBtn, yesBtn, noBtn;
+    private TextView statsView, pendView;
     private long lastTap;
     private SharedPreferences prefs;
 
@@ -97,6 +98,7 @@ public class OverlayService extends Service {
             return START_NOT_STICKY;
         }
         if (root == null) createOverlay();
+        uploadYes(false);                                       // retry YES emails that could not be saved earlier
         QueueBus.register(onQueueChanged);
         running = true;
         refresh();
@@ -192,6 +194,14 @@ public class OverlayService extends Service {
             float a = n > 0 ? 1f : 0.45f;
             copyMailBtn.setAlpha(a);
             copyPassBtn.setAlpha(a);
+            String nm = Tally.name(this), pend = Tally.pending(this);
+            int un = Tally.unsentCount(this);
+            statsView.setText((nm.isEmpty() ? "No name" : nm) + "\n✔ " + Tally.yes(this) + "   ✘ " + Tally.no(this)
+                    + (un > 0 ? "   ⇡" + un : ""));
+            pendView.setText(pend == null ? "Pending: none" : "Pending:\n" + pend);
+            pendView.setTextColor(pend == null ? 0x99FFFFFF : 0xFFFBBF24);
+            yesBtn.setAlpha(pend == null ? 0.45f : 1f);
+            noBtn.setAlpha(pend == null ? 0.45f : 1f);
         }
         getSystemService(NotificationManager.class).notify(NOTIF_ID, buildNotification(n));
     }
@@ -225,7 +235,44 @@ public class OverlayService extends Service {
                 .setPrimaryClip(ClipData.newPlainText("password", p.password));
         flash(copyPassBtn, "COPIED", "COPY\nPASS");
         QueueStore.get(this).remove(p.email);   // pair is done once its password has been taken
+        String old = Tally.pending(this);
+        Tally.setPending(this, p.email);        // now waiting for YES / NO
+        if (old != null && !old.equals(p.email))
+            Toast.makeText(this, "Previous pending (" + old + ") was skipped", Toast.LENGTH_SHORT).show();
         QueueBus.changed();
+    }
+
+    /** YES: counts it and saves the email (+ "yes") into the Google Sheet. NO: only counts it. */
+    private void doDecide(boolean yes) {
+        if (!licensed() || debounced()) return;
+        String pend = Tally.pending(this);
+        if (pend == null) { Toast.makeText(this, "Nothing pending — copy a password first", Toast.LENGTH_SHORT).show(); return; }
+        if (yes) {
+            Tally.decideYes(this, pend);
+            if (Tally.sheetId(this).isEmpty())
+                Toast.makeText(this, "YES counted — add your Google Sheet link in the app to save it", Toast.LENGTH_LONG).show();
+        } else {
+            Tally.decideNo(this);
+        }
+        QueueBus.changed();
+        if (yes) uploadYes(true);
+    }
+
+    /** Sends waiting YES emails to the sheet in the background; keeps them queued if it fails. */
+    private void uploadYes(final boolean report) {
+        if (Tally.unsentCount(this) == 0) return;
+        final Context app = getApplicationContext();
+        try {
+            io.execute(() -> {
+                Tally.flush(app);
+                main.post(() -> {
+                    QueueBus.changed();
+                    String err = Tally.error(app);
+                    if (report && !err.isEmpty() && !Tally.sheetId(app).isEmpty())
+                        Toast.makeText(app, err, Toast.LENGTH_LONG).show();
+                });
+            });
+        } catch (Exception ignored) { }          // executor already shut down
     }
 
     private void doPaste(String text, String emptyMsg, Button btn, String temp, String normal) {
@@ -341,8 +388,34 @@ public class OverlayService extends Service {
         row2.addView(pasteMailBtn);
         row2.addView(pastePassBtn);
 
+        LinearLayout row3 = new LinearLayout(this);
+        row3.setOrientation(LinearLayout.HORIZONTAL);
+        yesBtn = makeButton("YES", 0xFF16A34A, 0xFF15803D, v -> doDecide(true));
+        noBtn = makeButton("NO", 0xFFEF4444, 0xFFDC2626, v -> doDecide(false));
+        row3.addView(yesBtn);
+        row3.addView(noBtn);
+
+        statsView = new TextView(this);
+        statsView.setTextColor(0xFFFFFFFF);
+        statsView.setTextSize(10f);
+        statsView.setTypeface(Typeface.DEFAULT_BOLD);
+        statsView.setGravity(Gravity.CENTER);
+        statsView.setSingleLine(false);
+        statsView.setMaxLines(2);
+        statsView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        statsView.setLayoutParams(new LinearLayout.LayoutParams(dp(134), LinearLayout.LayoutParams.WRAP_CONTENT));
+        pendView = new TextView(this);
+        pendView.setTextSize(9f);
+        pendView.setGravity(Gravity.CENTER);
+        pendView.setMaxLines(2);
+        pendView.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        pendView.setLayoutParams(new LinearLayout.LayoutParams(dp(134), LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        grid.addView(statsView);
         grid.addView(row1);
         grid.addView(row2);
+        grid.addView(pendView);
+        grid.addView(row3);
         root.addView(grid);
 
         // Small round handle shown while the tool is hidden; tap it to bring the buttons back.

@@ -33,6 +33,7 @@ button:active{transform:scale(.97);opacity:.9}
 textarea{width:100%;min-height:84px;resize:vertical;background:#0b1020;color:var(--tx);border:1px solid var(--line);border-radius:12px;padding:10px;font:13px ui-monospace,monospace;outline:none}
 textarea:focus{border-color:var(--a)}
 .actions{display:flex;gap:8px;margin-top:8px}.actions .primary{flex:1}
+.tcount{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:2px}.tcount div{background:#0b1020;border:1px solid var(--line);border-radius:12px;padding:8px;text-align:center}.tcount b{display:block;font-size:22px}.tcount small{color:var(--mut);font-size:10px;text-transform:uppercase}#t-yes{color:var(--ok)}#t-no{color:#f87171}
 .hint{color:var(--mut);font-size:11px;margin:6px 2px 0}
 #msg{min-height:18px;margin-top:8px;font-size:12px;color:var(--mut)}
 .divider{display:flex;align-items:center;gap:10px;color:var(--mut);font-size:11px;margin:12px 0}
@@ -111,6 +112,18 @@ body.peek .card,body.peek header .sub,body.peek header h1,body.peek #state{opaci
   <div style="margin-top:12px"><button id="toggle" class="primary">Start floating tool</button></div>
 </div>
 
+<div class="card" id="tally">
+  <h2>YES / NO counter &amp; Google Sheet</h2>
+  <div class="tcount"><div><b id="t-yes">0</b><small>YES</small></div><div><b id="t-no">0</b><small>NO</small></div><div><b id="t-pend">–</b><small>Pending</small></div></div>
+  <input class="key" id="t-name" placeholder="Name (counts below belong to this name)" maxlength="30" autocomplete="off">
+  <div class="actions"><button class="primary" id="t-setname">Set / replace name</button><button class="ghost" id="t-reset">Reset counter</button></div>
+  <input class="key" id="t-sheet" placeholder="Google Sheet link" spellcheck="false" autocapitalize="off" autocomplete="off" style="margin-top:12px">
+  <input class="key" id="t-tab" placeholder="Tab name (optional, default = first tab)" spellcheck="false" autocomplete="off" style="margin-top:8px">
+  <div class="actions"><button class="primary" id="t-save">Save sheet</button><button class="ghost" id="t-paste">Paste</button></div>
+  <div class="hint">After COPY PASS the email becomes <b>pending</b>. Tap <b>YES</b> in the floating tool to save it to column A of the sheet (column B = yes); <b>NO</b> is only counted. Share the sheet with the Google account that owns your Apps Script (Editor).</div>
+  <div id="t-msg" class="hint"></div>
+</div>
+
 <div class="card">
   <h2>Add email : password pairs</h2>
   <button class="primary" id="upload">Upload .txt file</button>
@@ -147,6 +160,9 @@ const N = window.Native || {  // browser preview mock
   _exp:0,
   license(){const r=this._exp-Date.now();return JSON.stringify(Object.assign({device:'Preview phone • a1b2c3',server:true},r>0?{state:1,lifetime:false,expiry:this._exp,remaining:r}:{state:this._exp?2:0}))},
   activate(k){setTimeout(()=>window.onActivate(k.trim()?(this._exp=Date.now()+3600e3,{ok:true,msg:'Activated (preview)'}):{ok:false,msg:'Invalid key'}),600);return JSON.stringify({pending:true})},
+  _t:{name:'',yes:0,no:0,pending:'',unsent:0,sheet:'',tab:'',err:''},
+  tally(){return JSON.stringify(this._t)},setName(n){this._t.name=n.trim()},resetTally(){this._t.yes=this._t.no=0},
+  setSheet(l,t){if(l&&!/\/d\/[\w-]{20,}/.test(l))return JSON.stringify({ok:false,msg:'That is not a Google Sheets link'});this._t.sheet=l;this._t.tab=t;return '{"ok":true}'},retryUpload(){},
   clipboard(){return ''},
   requestOverlay(){},openAccessibility(){},requestNotifications(){},startOverlay(){},stopOverlay(){}};
 const $=id=>document.getElementById(id);
@@ -215,7 +231,29 @@ function render(){
     li.append(a,f,x);ul.appendChild(li);
   });
 }
-window.onNative = render;
+window.onNative = ()=>{ render(); renderTally(); };
+
+function renderTally(){
+  let t; try{ t=JSON.parse(N.tally()); }catch(e){ return; }
+  $('t-yes').textContent=t.yes; $('t-no').textContent=t.no;
+  $('t-pend').textContent=t.pending?'1':'–'; $('t-pend').title=t.pending||'';
+  const ae=document.activeElement;
+  if(ae!==$('t-name') && $('t-name').value!==t.name) $('t-name').value=t.name;
+  if(ae!==$('t-sheet') && ae!==$('t-tab')){ $('t-sheet').value=t.sheet||''; $('t-tab').value=t.tab||''; }
+  const m=$('t-msg');
+  if(t.err){ m.style.color='#f87171'; m.textContent=t.err+(t.unsent?' • '+t.unsent+' waiting to upload':''); }
+  else if(t.unsent){ m.style.color='var(--warn)'; m.textContent=t.unsent+' YES waiting to upload'; }
+  else if(t.sheet){ m.style.color='var(--ok)'; m.textContent='Sheet connected'; }
+  else { m.style.color='var(--mut)'; m.textContent='No sheet connected yet — YES is counted but not saved.'; }
+}
+$('t-setname').onclick=()=>{ N.setName($('t-name').value); renderTally(); };
+$('t-reset').onclick=()=>{ if(confirm('Reset YES and NO counters to 0?')){ N.resetTally(); renderTally(); } };
+$('t-save').onclick=()=>{
+  const r=JSON.parse(N.setSheet($('t-sheet').value,$('t-tab').value));
+  if(!r.ok){ $('t-msg').style.color='#f87171'; $('t-msg').textContent=r.msg; return; }
+  renderTally();
+};
+$('t-paste').onclick=()=>{ const c=N.clipboard(); if(c) $('t-sheet').value=c.trim(); };
 
 $('upload').onclick=()=>$('file').click();
 $('file').onchange=()=>{ $('file').value=''; /* native side reads & imports the picked file */ setTimeout(render,600) };
@@ -249,7 +287,7 @@ $('clear').onclick=function(){
   if(!armed){armed=true;this.textContent='Tap again to confirm';setTimeout(()=>{armed=false;this.textContent='Clear all'},3000);return}
   armed=false;this.textContent='Clear all';N.clear();render();
 };
-render();
+render(); renderTally();
 /* ================= live backgrounds ================= */
 const fxc=$('fx'), fctx=fxc.getContext('2d'), wrap=$('bgwrap');
 let W=0,H=0,raf=0,lastTs=0,curFx=null,ptr={x:-999,y:-999};

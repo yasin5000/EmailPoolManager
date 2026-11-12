@@ -135,6 +135,14 @@ public class MainActivity extends Activity {
         pushToWeb();
         web.onResume();
         syncInBackground();
+        flushYes();
+    }
+
+    /** Retries YES emails that could not be written to the Google Sheet yet. */
+    private void flushYes() {
+        if (Tally.unsentCount(this) == 0) return;
+        final android.content.Context app = getApplicationContext();
+        new Thread(() -> { Tally.flush(app); QueueBus.changed(); }).start();
     }
 
     @Override protected void onPause() {
@@ -260,6 +268,40 @@ public class MainActivity extends Activity {
             }).start();
             return "{\"pending\":true}";
         }
+
+        // ---- YES / NO counter + Google Sheet ----
+
+        @JavascriptInterface public String tally() { return Tally.snapshot(MainActivity.this).toString(); }
+
+        @JavascriptInterface public void setName(String name) {
+            Tally.setName(MainActivity.this, name);
+            QueueBus.changed();
+        }
+
+        /** Returns {"ok":true} or {"ok":false,"msg":...}. Empty link clears the sheet. */
+        @JavascriptInterface public String setSheet(String link, String tab) {
+            String l = link == null ? "" : link.trim();
+            try {
+                if (l.isEmpty()) {
+                    Tally.saveSheet(MainActivity.this, "", "", "");
+                    QueueBus.changed();
+                    return "{\"ok\":true}";
+                }
+                String id = Tally.parseSheetId(l);
+                if (id == null) return "{\"ok\":false,\"msg\":\"That is not a Google Sheets link\"}";
+                Tally.saveSheet(MainActivity.this, l, id, tab);
+                QueueBus.changed();
+                flushYes();
+                return "{\"ok\":true}";
+            } catch (Exception e) { return "{\"ok\":false,\"msg\":\"Error\"}"; }
+        }
+
+        @JavascriptInterface public void resetTally() {
+            Tally.reset(MainActivity.this);
+            QueueBus.changed();
+        }
+
+        @JavascriptInterface public void retryUpload() { flushYes(); }
 
         @JavascriptInterface public String clipboard() {
             try {
